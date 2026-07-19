@@ -1,20 +1,22 @@
 import pandas as pd
 import ast
 import json
-from esco_skill_extractor import SkillExtractor
+# from esco_skill_extractor import SkillExtractor
 import os
+import numpy as np
+
 
 files = os.listdir('files/raw')
 files = [f for f in os.listdir('files/raw') if f.endswith('.parquet')]
 
 
 salary_limits_dict = {
-    #  'fr': {'hour': {'min': 10, 'max': 500}, 'month': {'min': 1500, 'max': 20000}, 'year': {'min': 21600, 'max': 300000}},
-     #'be': {'hour': {'min': 12, 'max': 600}, 'month': {'min': 1800, 'max': 25000}, 'year': {'min': 25000, 'max': 350000}},
-     #'cs': {'hour': {'min': 5, 'max': 200}, 'month': {'min': 800, 'max': 10000}, 'year': {'min': 10000, 'max': 150000}},
-    #'de': {'hour': {'min': 12, 'max': 600}, 'month': {'min': 1900, 'max': 25000}, 'year': {'min': 26000, 'max': 350000}},
-     #'el': {'hour': {'min': 6, 'max': 300}, 'month': {'min': 900, 'max': 12000}, 'year': {'min': 12000, 'max': 180000}},
-     #'sv': {'hour': {'min': 15, 'max': 700}, 'month': {'min': 2000, 'max': 28000}, 'year': {'min': 28000, 'max': 400000}},
+    'fr': {'hour': {'min': 10, 'max': 500}, 'month': {'min': 1500, 'max': 20000}, 'year': {'min': 21600, 'max': 300000}},
+    'be': {'hour': {'min': 12, 'max': 600}, 'month': {'min': 1800, 'max': 25000}, 'year': {'min': 25000, 'max': 350000}},
+    'cs': {'hour': {'min': 5, 'max': 200}, 'month': {'min': 800, 'max': 10000}, 'year': {'min': 10000, 'max': 150000}},
+    'de': {'hour': {'min': 12, 'max': 600}, 'month': {'min': 1900, 'max': 25000}, 'year': {'min': 26000, 'max': 350000}},
+    'el': {'hour': {'min': 6, 'max': 300}, 'month': {'min': 900, 'max': 12000}, 'year': {'min': 12000, 'max': 180000}},
+    'sv': {'hour': {'min': 15, 'max': 700}, 'month': {'min': 2000, 'max': 28000}, 'year': {'min': 28000, 'max': 400000}},
     'nl': {'hour': {'min': 12, 'max': 600}, 'month': {'min': 2300, 'max': 25000}, 'year': {'min': 27600, 'max': 350000}},
 
 }
@@ -22,7 +24,7 @@ salary_limits_dict = {
 def calculate_salary(row, country_code):
     # country = row.get('country')
     period = row.get('salary.period')
-    salary_val = row.get('salary.min')
+    salary_val = row.get('salary_final')
     
     if country_code not in salary_limits_dict or period not in salary_limits_dict[country_code]:
         return None
@@ -45,6 +47,14 @@ def calculate_salary(row, country_code):
     return None
 
 
+def get_limit(country_code, period, key):
+    limits = salary_limits_dict.get(country_code)
+    if limits is None:
+        return np.nan
+    return limits[period][key]
+
+
+
 for file in files:
     print(file) 
     country_code = file.split('_')[2].split('.')[0]
@@ -56,12 +66,9 @@ for file in files:
         continue
 
     df = pd.read_parquet(INPUT_PARQUET_FILE)
-    # print(df.shape)
-    # print(df.isna().sum())
 
 
     df = df[~df['profile_remunerationPackage'].isna()]
-    # print(df.shape)
 
     df['profile_remunerationPackage_dict'] = df['profile_remunerationPackage'].apply(json.loads)
     df_remuneration = pd.json_normalize(df['profile_remunerationPackage_dict'])
@@ -76,18 +83,53 @@ for file in files:
     df_extended.drop(['profile_remunerationPackage', 'profile_remunerationPackage_dict'], axis=1, inplace=True)
     print(df_extended.shape)
 
-    df_extended = df_extended[~df_extended['salary.min'].isna()]
+    conditions = [
+    df_extended['salary.amount'].notna(),
+    df_extended['salary.min'].notna() & df_extended['salary.max'].notna(),
+    df_extended['salary.min'].notna(),
+    df_extended['salary.max'].notna(),
+    ]
+
+    choices = [
+        df_extended['salary.amount'],
+        (df_extended['salary.min'] + df_extended['salary.max']) / 2,
+        df_extended['salary.min'],
+        df_extended['salary.max'],
+    ]
+
+    df_extended['salary_final'] = np.select(conditions, choices, default=np.nan)
+
+    df_extended = df_extended[~df_extended['salary_final'].isna()]
     print(df_extended.shape)
-    df_extended = df_extended[~df_extended['salary.period'].isna()]
-    print(df_extended.shape)
+
+       
+
+    for period in ['hour', 'month', 'year']:
+        for key in ['min', 'max']:
+            df_extended[f'{period}_{key}'] = get_limit(country_code, period, key)
+
+    conditions = [
+        df_extended['salary_final'].between(df_extended['month_min'], df_extended['month_max']),
+        df_extended['salary_final'].between(df_extended['year_min'], df_extended['year_max']),
+        df_extended['salary_final'].between(df_extended['hour_min'], df_extended['hour_max']),
+    ]
+    choices = ['month', 'year', 'hour']
+
+    df_extended['salary.period'] = np.select(conditions, choices, default='UNK')
+
+    # df_extended = df_extended[~df_extended['salary.period'].isna()]
+    # df_extended['salary.period'].fillna('month')
     df_extended = df_extended[df_extended['salary.period'] != 'once']
-    print(df_extended.shape)
-    df_extended = df_extended[df_extended['profile_workSchedule'] == '["fulltime"]']
     print(df_extended.shape)
     df_extended = df_extended[df_extended['salary.period'] != 'hour']
     print(df_extended.shape)
+    df_extended = df_extended[df_extended['salary.period'] != 'UNK']
+    print(df_extended.shape)
 
-    # df_extended['annual_salary'] = df_extended.apply(calculate_salary, axis=1)
+    # df_extended = df_extended[df_extended['profile_workSchedule'] == '["fulltime"]']
+    # print(df_extended.shape)
+   
+
     df_extended['annual_salary'] = df_extended.apply(lambda row: calculate_salary(row, country_code), axis=1)
 
     print(df_extended.shape)
@@ -99,7 +141,7 @@ for file in files:
     print(df_extended.shape)
 
 
-    #df_extended_sample  = df_extended.sample(n=500, random_state=42)
+    # df_extended_sample  = df_extended.sample(n=500, random_state=42)
 
     skill_extractor = SkillExtractor()
 
