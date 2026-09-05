@@ -35,11 +35,22 @@ def map_skills_to_labels(skills_column):
     return [concept_to_label.get(skill, 'Unknown') for skill in skills_column]
 
 
+def classify_job(row):
+    """Assign one mutually exclusive skill category to a job advert."""
+    if row["strong_ai_count"] > 0:
+        return "AI"
+    if row["strict_it_count"] > 0:
+        return "IT"
+    if row["weak_general_count"] > 0:
+        return "Data"
+    return "Non-IT or unmatched"
+
+
 TARGET_COL = "annual_salary"
 SKILL_COL = "matched_mapped_skills"
 
 files = os.listdir('files/extracted')
-files = [f for f in os.listdir('files/extracted') if f.endswith('.csv')]
+files = [f for f in os.listdir('files/extracted') if f.endswith('cs.csv')]
 print("Files in 'files/extracted':", files)
 for file in files:
     print(f"Processing file: {file}")
@@ -77,26 +88,26 @@ for file in files:
     candidate_df["skills_list"] = candidate_df[SKILL_COL].apply(parse_list_cell)
     candidate_df["skills_list_clean"] = candidate_df["skills_list"].apply(clean_strict_skills)
 
+    candidate_df["skill_category"] = candidate_df.apply(
+        classify_job,
+        axis=1
+    )
+
     # Μετατροπή μισθού σε αριθμό
     candidate_df[TARGET_COL] = pd.to_numeric(candidate_df[TARGET_COL], errors="coerce")
 
-    # Κρατάμε μόνο rows με μισθό και τουλάχιστον ένα καθαρό skill
+    # Κρατάμε μόνο αγγελίες με έγκυρο μισθό και συγκεκριμένο IT/AI/data skill.
+    # Πολύ γενικοί όροι έχουν ήδη αφαιρεθεί από το skills_list_clean.
     df_skills_reg = candidate_df[
-        candidate_df[TARGET_COL].notna() &
-        candidate_df["skills_list_clean"].apply(lambda x: len(x) > 0)
+        candidate_df[TARGET_COL].notna()
+        & candidate_df["skills_list_clean"].apply(lambda skills: len(skills) > 0)
     ].copy()
 
     print("Rows before cleaning:", len(candidate_df))
-    print("Rows after removing noisy/general skills:", len(df_skills_reg))
+    print("Rows with valid salary and specific IT/AI/data skills:", len(df_skills_reg))
     
     df_skills_reg[[SKILL_COL, "skills_list_clean", TARGET_COL]].head(20)
     df_skills_reg.to_csv(f'files/cleaned/{file.split("_")[2].split(".")[0]}_final.csv', index=False, sep=';') 
-# INPUT_FILE = 'extracted_skills_France.csv'
-
-
-# df = pd.read_csv(INPUT_FILE, sep=';')
-
-
 
 
 

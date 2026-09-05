@@ -32,24 +32,21 @@ strict_it_skills = {
     "cloud computing", "aws", "azure", "google cloud", "gcp",
 }
 
-weak_general_skills = {
+# Specific data skills. Broad terms such as "analytics", "automation",
+# "statistics" and "Excel" are intentionally excluded because on their own
+# they do not reliably identify an IT/data role.
+data_skills = {
     "python", "sql", "data analysis", "data analytics", "data science", "pandas",
-    "numpy", "excel", "statistics", "r", "power bi", "tableau",
-    "business intelligence", "analytics", "automation",
+    "numpy", "power bi", "tableau", "business intelligence",
+    "data visualisation", "data visualization", "database querying",
 }
 
 
 excluded_skills = {
     "automation technology",
     "statistics",
-    "data analytics",
-    "data analysis",
     "healthcare analytics",
-    "business intelligence",
-    "data warehouse",
     "excel",
-    "tableau",
-    "power bi",
     "analytics",
     "r",
 
@@ -73,7 +70,9 @@ excluded_skills = {
 
 def skill_exact_or_phrase_match(skill, skill_set):
     s = str(skill).lower().strip()
+    # print(f'skill: {skill}')
     for target in skill_set:
+        # print(f'> target: {target}')
         target = target.lower().strip()
         if target == "react":
             if s in {"react", "react.js", "reactjs"} or "react (javascript" in s or "react framework" in s:
@@ -85,6 +84,7 @@ def skill_exact_or_phrase_match(skill, skill_set):
             continue
         pattern = r"\b" + re.escape(target) + r"\b"
         if re.search(pattern, s):
+            print(f'>>> match found: {s} matches {target}')
             return True
     return False
 
@@ -96,7 +96,7 @@ def collect_candidate_matches(skills_value):
         if (
             skill_exact_or_phrase_match(skill, strong_ai_skills)
             or skill_exact_or_phrase_match(skill, strict_it_skills)
-            or skill_exact_or_phrase_match(skill, weak_general_skills)
+            or skill_exact_or_phrase_match(skill, data_skills)
         ):
             matched.append(skill)
     return sorted(set(matched))
@@ -110,17 +110,18 @@ def make_candidate_dataset(df):
 
     df = df.copy()
     df["matched_mapped_skills"] = df[mapped_col].apply(collect_candidate_matches)
-    candidate_df = df[df["matched_mapped_skills"].apply(len) > 0].copy()
 
-    groups = candidate_df["matched_mapped_skills"].apply(get_match_groups)
-    candidate_df["strong_ai_matches"] = groups.apply(lambda x: x[0])
-    candidate_df["strict_it_matches"] = groups.apply(lambda x: x[1])
-    candidate_df["weak_general_matches"] = groups.apply(lambda x: x[2])
-    candidate_df["matched_skill_count"] = candidate_df["matched_mapped_skills"].apply(len)
-    candidate_df["strong_ai_count"] = candidate_df["strong_ai_matches"].apply(len)
-    candidate_df["strict_it_count"] = candidate_df["strict_it_matches"].apply(len)
-    candidate_df["weak_general_count"] = candidate_df["weak_general_matches"].apply(len)
-    return candidate_df, mapped_col
+    # Keep every job, including jobs with no AI/IT match. Empty matches are
+    # useful as a separate comparison group and should not remove the row.
+    groups = df["matched_mapped_skills"].apply(get_match_groups)
+    df["strong_ai_matches"] = groups.apply(lambda x: x[0])
+    df["strict_it_matches"] = groups.apply(lambda x: x[1])
+    df["weak_general_matches"] = groups.apply(lambda x: x[2])
+    df["matched_skill_count"] = df["matched_mapped_skills"].apply(len)
+    df["strong_ai_count"] = df["strong_ai_matches"].apply(len)
+    df["strict_it_count"] = df["strict_it_matches"].apply(len)
+    df["weak_general_count"] = df["weak_general_matches"].apply(len)
+    return df, mapped_col
 
 def get_match_groups(skills):
     strong_ai_matches, strict_it_matches, weak_matches = [], [], []
@@ -129,7 +130,7 @@ def get_match_groups(skills):
             strong_ai_matches.append(skill)
         if skill_exact_or_phrase_match(skill, strict_it_skills):
             strict_it_matches.append(skill)
-        if skill_exact_or_phrase_match(skill, weak_general_skills):
+        if skill_exact_or_phrase_match(skill, data_skills):
             weak_matches.append(skill)
     return (
         sorted(set(strong_ai_matches)),

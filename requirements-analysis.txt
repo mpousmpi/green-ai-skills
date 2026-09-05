@@ -1,0 +1,10 @@
+numpy>=2.3,<3
+pandas>=3.0,<4
+scipy>=1.17,<2
+scikit-learn>=1.8,<2
+statsmodels>=0.15,<1
+matplotlib>=3.11,<4
+seaborn>=0.13,<1
+jupyterlab>=4.6,<5
+notebook>=7.6,<8
+nbconvert>=7.17,<8
