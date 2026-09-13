@@ -85,9 +85,9 @@ for unit, column in [("USD_PPP", "avg_annual_wage_constant_2025_usd_ppp"), ("EUR
     panel[column] = [lookup.get((r.oecd_code, int(r.year))) for _, r in panel.iterrows()]
 
 panel = panel.drop(columns="oecd_code")
-Path("outputs/macro-economic-research").mkdir(parents=True, exist_ok=True)
-panel.to_json("outputs/macro-economic-research/macro_panel.json", orient="records", indent=2)
-panel.to_csv("outputs/macro-economic-research/macro_panel.csv", index=False)
+Path("outputs").mkdir(parents=True, exist_ok=True)
+panel.to_json("outputs/macro_panel.json", orient="records", indent=2)
+panel.to_csv("outputs/macro_panel.csv", index=False)
 
 print(panel.to_string(index=False))
 print("\nMissing by column:\n", panel.isna().sum().to_string())

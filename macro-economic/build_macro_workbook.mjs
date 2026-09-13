@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { SpreadsheetFile, Workbook } from "@oai/artifact-tool";
 
-const outputDir = "outputs/macro-economic-research";
+const outputDir = "outputs";
 const panel = JSON.parse(await fs.readFile(path.join(outputDir, "macro_panel.json"), "utf8"));
 const workbook = Workbook.create();
 const green = "#166534", dark = "#14532D", pale = "#DCFCE7", gold = "#F59E0B", light = "#F8FAFC";
