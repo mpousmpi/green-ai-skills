@@ -1,4 +1,4 @@
-"""Run descriptive, inferential and predictive analyses for the France pilot."""
+"""Run descriptive, inferential and predictive analyses for every EURES country sample."""
 
 from __future__ import annotations
 
@@ -21,9 +21,10 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 
-DATA_PATH = Path("files/cleaned/fr_analysis.csv")
-REPORT_DIR = Path("reports/france")
+ANALYSIS_DIR = Path("files/analysis")
+REPORTS_DIR = Path("reports")
 RANDOM_STATE = 42
+MIN_ANALYSIS_ROWS = 30
 
 TECH_COLUMNS = [
     "has_ai_ml", "has_data_analysis", "has_data_engineering", "has_software",
@@ -50,12 +51,19 @@ def extract_region(value: object) -> str:
     return str(region) if region else "missing"
 
 
-def prepare_data() -> pd.DataFrame:
-    df = pd.read_csv(DATA_PATH, sep=";", low_memory=False)
+def prepare_data(data_path: Path) -> pd.DataFrame:
+    df = pd.read_csv(data_path, sep=";", low_memory=False)
     df["annual_salary"] = pd.to_numeric(df["annual_salary"], errors="coerce")
+
+    # Keep the sample's dominant salary currency only; a handful of adverts
+    # are mistagged with a foreign currency and would distort the analysis.
+    currency_counts = df["salary.currency"].value_counts(dropna=True)
+    primary_currency = currency_counts.index[0] if not currency_counts.empty else "unknown"
     df = df.loc[
-        df["annual_salary"].gt(0) & df["salary.currency"].eq("EUR")
+        df["annual_salary"].gt(0) & df["salary.currency"].eq(primary_currency)
     ].copy()
+    df.attrs["currency"] = primary_currency
+
     df["log_salary"] = np.log(df["annual_salary"])
     df["creation_year"] = pd.to_datetime(df["creationDate"], errors="coerce", utc=True).dt.year
     df["tech_soft_interaction"] = df["has_tech_skills"] * df["has_soft_skills"]
@@ -116,9 +124,16 @@ def salary_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 def fit_clustered_ols(formula: str, df: pd.DataFrame):
     model = smf.ols(formula, data=df).fit()
-    return model.get_robustcov_results(
-        cov_type="cluster", groups=df.loc[model.model.data.row_labels, "occupation_group"]
-    )
+    groups = df.loc[model.model.data.row_labels, "occupation_group"]
+    if groups.nunique() < 2:
+        # Cluster-robust SEs are undefined with a single cluster (small
+        # country samples can collapse to one "other_or_rare" group).
+        # Fall back to heteroskedasticity-robust (HC1) SEs instead, via the
+        # same get_robustcov_results() call so the returned object has the
+        # same (array-based) conf_int()/cov_params() shape that
+        # tidy_terms() and coefficient_contrast() expect.
+        return model.get_robustcov_results(cov_type="HC1")
+    return model.get_robustcov_results(cov_type="cluster", groups=groups)
 
 
 def tidy_terms(model, selected_terms: list[str], model_name: str) -> pd.DataFrame:
@@ -209,26 +224,32 @@ def predictive_models(df: pd.DataFrame) -> pd.DataFrame:
                 "model": name,
                 "train_n": len(train),
                 "test_n": len(test),
-                "mae_eur": mean_absolute_error(test["annual_salary"], prediction),
-                "rmse_eur": mean_squared_error(test["annual_salary"], prediction) ** 0.5,
+                "mae": mean_absolute_error(test["annual_salary"], prediction),
+                "rmse": mean_squared_error(test["annual_salary"], prediction) ** 0.5,
                 "r2": r2_score(test["annual_salary"], prediction),
             })
     return pd.DataFrame(rows)
 
 
-def save_figures(df: pd.DataFrame, category_summary: pd.DataFrame, coefficient_table: pd.DataFrame) -> None:
+def save_figures(
+    df: pd.DataFrame,
+    category_summary: pd.DataFrame,
+    coefficient_table: pd.DataFrame,
+    report_dir: Path,
+    currency: str,
+) -> None:
     sns.set_theme(style="whitegrid")
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     df["annual_salary"].clip(upper=df["annual_salary"].quantile(0.99)).hist(bins=40, ax=axes[0])
-    axes[0].set(title="Annual salary (capped at 99th percentile)", xlabel="EUR", ylabel="Adverts")
+    axes[0].set(title="Annual salary (capped at 99th percentile)", xlabel=currency, ylabel="Adverts")
     order = ["neither", "soft_only", "technical_only", "technical_and_soft"]
     plot_data = category_summary.reindex(order).reset_index()
     sns.barplot(data=plot_data, x="skill_mix", y="median", ax=axes[1], color="#3B82F6")
     axes[1].tick_params(axis="x", rotation=25)
-    axes[1].set(title="Median salary by skill mix", xlabel="", ylabel="EUR")
+    axes[1].set(title="Median salary by skill mix", xlabel="", ylabel=currency)
     fig.tight_layout()
-    fig.savefig(REPORT_DIR / "salary_overview.png", dpi=180, bbox_inches="tight")
+    fig.savefig(report_dir / "salary_overview.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
     tech_prevalence = df[TECH_COLUMNS].mean().mul(100).sort_values()
@@ -236,7 +257,7 @@ def save_figures(df: pd.DataFrame, category_summary: pd.DataFrame, coefficient_t
     tech_prevalence.plot.barh(ax=ax, color="#2563EB")
     ax.set(title="Prevalence of technical skill categories", xlabel="Percent of adverts", ylabel="")
     fig.tight_layout()
-    fig.savefig(REPORT_DIR / "technical_skill_prevalence.png", dpi=180, bbox_inches="tight")
+    fig.savefig(report_dir / "technical_skill_prevalence.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
     adjusted = coefficient_table.loc[coefficient_table["model"].eq("adjusted_trimmed")].copy()
@@ -253,18 +274,33 @@ def save_figures(df: pd.DataFrame, category_summary: pd.DataFrame, coefficient_t
     ax.axvline(0, color="black", linewidth=1)
     ax.set(title="Adjusted salary associations (99% trimmed sample)", xlabel="Approximate percent association", ylabel="")
     fig.tight_layout()
-    fig.savefig(REPORT_DIR / "adjusted_coefficients.png", dpi=180, bbox_inches="tight")
+    fig.savefig(report_dir / "adjusted_coefficients.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
-def main() -> None:
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    df = prepare_data()
+def analyze_country(data_path: Path, report_dir: Path) -> None:
+    df = prepare_data(data_path)
+    currency = df.attrs.get("currency", "unknown")
+
+    # The mix regression and its direct contrast need real observations in
+    # every skill_mix level; a small country sample can end up with zero
+    # technical adverts, in which case those regression terms never exist.
+    sparse_categories = [
+        category
+        for category in ("technical_only", "technical_and_soft")
+        if df["skill_mix"].eq(category).sum() < 2
+    ]
+    if sparse_categories:
+        raise ValueError(
+            f"too few adverts in skill_mix categories {sparse_categories} to run the mix regression"
+        )
+
+    report_dir.mkdir(parents=True, exist_ok=True)
     lower, upper = df["annual_salary"].quantile([0.01, 0.99])
     trimmed = df.loc[df["annual_salary"].between(lower, upper)].copy()
 
     summary = salary_summary(df)
-    summary.to_csv(REPORT_DIR / "salary_by_skill_mix.csv")
+    summary.to_csv(report_dir / "salary_by_skill_mix.csv")
     category_summary = pd.DataFrame({
         "advert_count": df[TECH_COLUMNS + SOFT_COLUMNS].sum(),
         "prevalence_percent": df[TECH_COLUMNS + SOFT_COLUMNS].mean() * 100,
@@ -273,7 +309,7 @@ def main() -> None:
             for column in TECH_COLUMNS + SOFT_COLUMNS
         ],
     })
-    category_summary.to_csv(REPORT_DIR / "skill_category_summary.csv")
+    category_summary.to_csv(report_dir / "skill_category_summary.csv")
 
     controls = (
         " + C(seniority) + C(contract_group) + C(schedule_group)"
@@ -311,14 +347,14 @@ def main() -> None:
         tidy_terms(category_model, TECH_COLUMNS + SOFT_COLUMNS, "category_adjusted_trimmed")
     )
     coefficients = pd.concat(coefficient_parts, ignore_index=True)
-    coefficients.to_csv(REPORT_DIR / "regression_coefficients.csv", index=False)
+    coefficients.to_csv(report_dir / "regression_coefficients.csv", index=False)
     mix_contrast = coefficient_contrast(
         adjusted_trimmed,
         "C(skill_mix, Treatment(reference='neither'))[T.technical_and_soft]",
         "C(skill_mix, Treatment(reference='neither'))[T.technical_only]",
         "technical_and_soft minus technical_only",
     )
-    mix_contrast.to_csv(REPORT_DIR / "skill_mix_contrast.csv", index=False)
+    mix_contrast.to_csv(report_dir / "skill_mix_contrast.csv", index=False)
 
     model_fit = pd.DataFrame([
         {"model": "unadjusted_full", "n": int(unadjusted.nobs), "r2": unadjusted.rsquared},
@@ -327,15 +363,16 @@ def main() -> None:
         {"model": "broad_detection_trimmed", "n": int(broad.nobs), "r2": broad.rsquared},
         {"model": "category_adjusted_trimmed", "n": int(category_model.nobs), "r2": category_model.rsquared},
     ])
-    model_fit.to_csv(REPORT_DIR / "regression_model_fit.csv", index=False)
+    model_fit.to_csv(report_dir / "regression_model_fit.csv", index=False)
 
     prediction = predictive_models(trimmed)
-    prediction.to_csv(REPORT_DIR / "prediction_metrics.csv", index=False)
-    save_figures(df, summary, coefficients)
+    prediction.to_csv(report_dir / "prediction_metrics.csv", index=False)
+    save_figures(df, summary, coefficients, report_dir, currency)
 
     quality = pd.DataFrame([{
         "analysis_rows": len(df),
         "trimmed_rows": len(trimmed),
+        "currency": currency,
         "salary_p01": lower,
         "salary_median": df["annual_salary"].median(),
         "salary_p99": upper,
@@ -344,7 +381,7 @@ def main() -> None:
         "soft_rows": int(df["has_soft_skills"].sum()),
         "missing_education_rows": int(df["profile_requiredEducationLevel"].isna().sum()),
     }])
-    quality.to_csv(REPORT_DIR / "quality_summary.csv", index=False)
+    quality.to_csv(report_dir / "quality_summary.csv", index=False)
 
     print("Quality summary")
     print(quality.to_string(index=False))
@@ -356,6 +393,26 @@ def main() -> None:
     print(prediction.round(3).to_string(index=False))
     print("\nDirect skill-mix contrast")
     print(mix_contrast.round(3).to_string(index=False))
+
+
+def main() -> None:
+    input_files = sorted(ANALYSIS_DIR.glob("*_analysis.csv"))
+    if not input_files:
+        raise FileNotFoundError(f"No *_analysis.csv files found in {ANALYSIS_DIR}")
+
+    for input_path in input_files:
+        country_code = input_path.stem.split("_")[0]
+        print(f"=== {country_code.upper()} ===")
+        try:
+            row_count = len(pd.read_csv(input_path, sep=";", usecols=["annual_salary"], low_memory=False))
+            if row_count < MIN_ANALYSIS_ROWS:
+                print(f"Skipping {country_code}: only {row_count} rows, below the minimum of {MIN_ANALYSIS_ROWS}.\n")
+                continue
+            analyze_country(input_path, REPORTS_DIR / country_code)
+        except Exception as error:
+            print(f"Skipping {country_code}: {error}\n")
+            continue
+        print()
 
 
 if __name__ == "__main__":

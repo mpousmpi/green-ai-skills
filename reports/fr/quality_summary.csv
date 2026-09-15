@@ -1,0 +1,2 @@
+analysis_rows,trimmed_rows,currency,salary_p01,salary_median,salary_p99,technical_rows,strict_technical_rows,soft_rows,missing_education_rows
+101940,100209,EUR,21000.0,30000.0,130000.0,1129,1129,33675,101940

@@ -1,4 +1,4 @@
-"""Build the thesis-ready analytical dataset for the French EURES sample."""
+"""Build the thesis-ready analytical dataset for every EURES country sample."""
 
 from __future__ import annotations
 
@@ -11,11 +11,9 @@ import numpy as np
 import pandas as pd
 
 
-INPUT_PATH = Path("files/extracted/extracted_skills_fr.csv")
+EXTRACTED_DIR = Path("files/extracted")
 ESCO_PATH = Path("ESCO_Mapping_csv 2.csv")
-OUTPUT_PATH = Path("files/cleaned/fr_analysis.csv")
-VALIDATION_PATH = Path("files/cleaned/fr_validation_sample.csv")
-RANDOM_STATE = 42
+OUTPUT_DIR = Path("files/analysis")
 
 
 TECH_TAXONOMY = {
@@ -187,16 +185,8 @@ def to_json_list(values: list[str]) -> str:
     return json.dumps(values, ensure_ascii=False)
 
 
-def main() -> None:
-    df = pd.read_csv(INPUT_PATH, sep=";", low_memory=False)
-    esco = pd.read_csv(
-        ESCO_PATH,
-        sep=";",
-        encoding="utf-8-sig",
-        usecols=["conceptUri", "preferredLabel"],
-        on_bad_lines="skip",
-    )
-    concept_to_label = dict(zip(esco["conceptUri"], esco["preferredLabel"]))
+def build_country_analysis(input_path: Path, concept_to_label: dict[str, str]) -> pd.DataFrame:
+    df = pd.read_csv(input_path, sep=";", low_memory=False)
 
     df["extracted_skill_uris"] = df["Extracted Skills"].apply(parse_list)
     df["mapped_skills"] = df["extracted_skill_uris"].apply(
@@ -212,8 +202,8 @@ def main() -> None:
     df["esco_tech_categories"] = df["mapped_skills"].apply(lambda x: combine_categories(x, tech_label_map))
     df["soft_categories"] = df["mapped_skills"].apply(lambda x: combine_categories(x, soft_label_map))
 
-    # "IA RECRUTEMENT/RECRUITMENT" is an agency name in this source, not
-    # evidence that the advertised role requires artificial intelligence.
+    # "IA RECRUTEMENT/RECRUITMENT" is an agency name in the French source,
+    # not evidence that the advertised role requires artificial intelligence.
     agency_name_pattern = r"\bIA\s+RECRU(?:I|)T(?:EMENT|MENT)\b"
     title_text = (
         df["profile_title"].fillna("").astype(str)
@@ -299,27 +289,6 @@ def main() -> None:
     df["duplicate_group_size"] = df.groupby(duplicate_key, dropna=False)["documentId"].transform("size")
     df = df.drop_duplicates(duplicate_key, keep="first").copy()
 
-    df["validation_stratum"] = np.select(
-        [
-            df["has_ai_ml"].eq(1),
-            df[["has_data_analysis", "has_data_engineering"]].max(axis=1).eq(1),
-            df["has_software"].eq(1),
-            df["has_tech_skills"].eq(1),
-            df["has_soft_skills"].eq(1),
-        ],
-        ["ai_ml", "data", "software", "other_technical", "soft_only"],
-        default="neither",
-    )
-    validation_parts = [
-        group.sample(min(50, len(group)), random_state=RANDOM_STATE)
-        for _, group in df.groupby("validation_stratum", sort=False)
-    ]
-    validation = pd.concat(validation_parts, ignore_index=True)
-    validation["manual_is_technical"] = ""
-    validation["manual_categories_correct"] = ""
-    validation["manual_soft_skills_correct"] = ""
-    validation["manual_notes"] = ""
-
     list_columns = [
         "mapped_skills", "tech_skills", "soft_skills", "esco_tech_categories",
         "title_tech_categories", "description_tech_categories", "broad_tech_categories", "tech_categories",
@@ -327,7 +296,6 @@ def main() -> None:
     ]
     for column in list_columns:
         df[column] = df[column].apply(to_json_list)
-        validation[column] = validation[column].apply(to_json_list)
 
     output_columns = [
         "documentId", "euresId", "creationDate", "profile_title", "profile_description",
@@ -343,26 +311,36 @@ def main() -> None:
         *[f"broad_has_{category}" for category in TECH_TAXONOMY],
         *[f"has_soft_{category}" for category in SOFT_TAXONOMY],
     ]
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    df[output_columns].to_csv(OUTPUT_PATH, sep=";", index=False, encoding="utf-8-sig")
-    validation_columns = [
-        "validation_stratum", "documentId", "profile_title", "profile_description",
-        "annual_salary", "isco_code", "mapped_skills", "tech_skills", "soft_skills",
-        "esco_tech_categories", "title_tech_categories", "description_tech_categories", "broad_tech_categories",
-        "tech_categories", "tech_detection_sources", "soft_categories",
-        "manual_is_technical", "manual_categories_correct",
-        "manual_soft_skills_correct", "manual_notes",
-    ]
-    validation[validation_columns].to_csv(
-        VALIDATION_PATH, sep=";", index=False, encoding="utf-8-sig"
-    )
+    return df[output_columns]
 
-    print(f"Input rows: {len(pd.read_csv(INPUT_PATH, sep=';', usecols=['documentId'])):,}")
-    print(f"Analytical rows: {len(df):,}")
-    print("Skill mix:")
-    print(df["skill_mix"].value_counts().to_string())
-    print(f"Output: {OUTPUT_PATH}")
-    print(f"Validation sample: {VALIDATION_PATH} ({len(validation):,} rows)")
+
+def main() -> None:
+    esco = pd.read_csv(
+        ESCO_PATH,
+        sep=";",
+        encoding="utf-8-sig",
+        usecols=["conceptUri", "preferredLabel"],
+        on_bad_lines="skip",
+    )
+    concept_to_label = dict(zip(esco["conceptUri"], esco["preferredLabel"]))
+
+    input_files = sorted(EXTRACTED_DIR.glob("extracted_skills_*.csv"))
+    if not input_files:
+        raise FileNotFoundError(f"No extracted_skills_*.csv files found in {EXTRACTED_DIR}")
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    for input_path in input_files:
+        country_code = input_path.stem.split("_")[-1]
+        input_rows = len(pd.read_csv(input_path, sep=";", usecols=["documentId"]))
+        df = build_country_analysis(input_path, concept_to_label)
+
+        output_path = OUTPUT_DIR / f"{country_code}_analysis.csv"
+        df.to_csv(output_path, sep=";", index=False, encoding="utf-8-sig")
+
+        print(f"{input_path.name}: input rows {input_rows:,}, analytical rows {len(df):,}")
+        print(df["skill_mix"].value_counts().to_string())
+        print(f"Output: {output_path}")
+        print()
 
 
 if __name__ == "__main__":

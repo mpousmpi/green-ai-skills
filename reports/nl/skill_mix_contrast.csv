@@ -1,0 +1,2 @@
+contrast,coefficient_difference,std_error,p_value,percent_difference,percent_ci_low,percent_ci_high
+technical_and_soft minus technical_only,0.010698913762292789,0.010155654683953031,0.29211498163570215,1.0756351798910788,-0.9163922384426268,3.1077113340857414

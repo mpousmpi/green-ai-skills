@@ -1,0 +1,2 @@
+analysis_rows,trimmed_rows,currency,salary_p01,salary_median,salary_p99,technical_rows,strict_technical_rows,soft_rows,missing_education_rows
+23008,22575,CZK,204000.0,336000.0,1080000.0,140,140,2814,0
